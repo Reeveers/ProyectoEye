@@ -6,6 +6,8 @@ import numpy as np
 import collections
 import keyboard
 import warnings
+import json
+from datetime import datetime
 
 warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf.symbol_database')
 
@@ -53,10 +55,45 @@ clock = pygame.time.Clock()
 # Inicializar la variable calibration
 calibration = None
 
+# Inicializar el contador de fijaciones
+fixation_count = 0
+
+# Inicializar el contador de sacadas
+saccade_count = 0
+
+# Inicializar el contador de regresiones
+regression_count = 0
+
+# Umbral de velocidad angular para detectar sacadas (en grados por segundo)
+saccade_threshold = 1000
+
+# Función para calcular la velocidad angular
+def calculate_angular_velocity(x1, y1, x2, y2, delta_t):
+    distance = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+    return distance / delta_t
+
+# Mantén un historial de las últimas fijaciones
+fixation_history_length = 10
+fixation_history = collections.deque(maxlen=fixation_history_length)
+
+# Mantén un historial de las posiciones de fijación para detectar regresiones
+fixation_positions = collections.deque(maxlen=50)
+
+# Listas para almacenar los historiales de eventos
+fixation_log = []
+regression_log = []
+saccade_log = []
+
 # Main game loop
 running = True
 isCalibrated = False
 iterator = 0
+previous_time = pygame.time.get_ticks()
+previous_x, previous_y = 0, 0
+
+# Inicializar las coordenadas anteriores
+previous_cursor_x, previous_cursor_y = 0, 0
+
 while running:
     # Event handling
     for event in pygame.event.get():
@@ -81,6 +118,25 @@ while running:
         
     cursor_x, cursor_y = event.point[0], event.point[1]
     fixation = event.fixation
+
+    # Añadir el valor de fijación actual al historial
+    fixation_history.append(fixation)
+
+    # Calcular el promedio de las fijaciones
+    average_fixation = sum(fixation_history) / len(fixation_history)
+
+    # Incrementar el contador de fijaciones si el promedio de fijación es superior a 0.8
+    if abs(cursor_x - previous_cursor_x) > 15 and abs(cursor_y - previous_cursor_y) > 15 and isCalibrated == True:
+        fixation_count += 1
+        fixation_log.append({
+            "type": "fixation",
+            "from": (previous_cursor_x, previous_cursor_y),
+            "to": (cursor_x, cursor_y),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+    # Actualizar las coordenadas anteriores
+    previous_cursor_x, previous_cursor_y = cursor_x, cursor_y
 
     # Añadir las coordenadas actuales al historial
     cursor_x_history.append(cursor_x)
@@ -114,13 +170,63 @@ while running:
         isCalibrated = True
 
     # Cambiar el color del círculo dependiendo del valor de fixation
-    circle_color = GREEN if fixation == 1 else RED
+    circle_color = GREEN if fixation > 0.6 else RED
     pygame.draw.circle(screen, circle_color, (smooth_cursor_x, smooth_cursor_y), 50)
 
-    # Renderiza el texto
-    text_surface = font.render(f'X: {smooth_cursor_x}, Y: {smooth_cursor_y}, Fixation: {fixation}', True, (255, 255, 255))  # Blanco
-    # Blit la superficie del texto en la pantalla
+    # Calcular la velocidad angular y detectar sacadas
+    current_time = pygame.time.get_ticks()
+    delta_t = (current_time - previous_time) / 1000.0  # Convertir a segundos
+    angular_velocity = calculate_angular_velocity(previous_x, previous_y, smooth_cursor_x, smooth_cursor_y, delta_t)
+    sacada = angular_velocity > saccade_threshold
+
+    if sacada and isCalibrated == True:
+        saccade_count += 1
+        saccade_log.append({
+            "type": "saccade",
+            "from": (previous_x, previous_y),
+            "to": (smooth_cursor_x, smooth_cursor_y),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+    # Detectar regresiones
+    regression_detected = False
+    for (prev_x, prev_y) in fixation_positions:
+        distance = np.sqrt((smooth_cursor_x - prev_x) ** 2 + (smooth_cursor_y - prev_y) ** 2)
+        if distance < 50:  # Umbral para considerar una regresión
+            regression_detected = True
+            regression_log.append({
+                "type": "regression",
+                "from": (previous_x, previous_y),
+                "to": (smooth_cursor_x, smooth_cursor_y),
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            break
+
+    if regression_detected and isCalibrated == True:
+        regression_count += 1
+
+    # Añadir la posición actual de fijación al historial
+    fixation_positions.append((smooth_cursor_x, smooth_cursor_y))
+
+    # Actualizar las variables anteriores
+    previous_time = current_time
+    previous_x, previous_y = smooth_cursor_x, smooth_cursor_y
+
+    # Renderiza el texto con el promedio de fijación
+    text_surface = font.render(f'X: {smooth_cursor_x}, Y: {smooth_cursor_y}, Avg Fixation: {average_fixation:.2f}', True, (255, 255, 255))  # Blanco
     screen.blit(text_surface, (10, 10))  # Coordenadas (10, 10)
+
+    # Mostrar el contador de fijaciones en la pantalla
+    fixation_text = font.render(f"Fixations: {fixation_count}", True, (255, 255, 255))
+    screen.blit(fixation_text, (50, 50))
+
+    # Mostrar el contador de sacadas en la pantalla
+    saccade_text = font.render(f"Saccades: {saccade_count}", True, (255, 255, 255))
+    screen.blit(saccade_text, (50, 80))
+
+    # Mostrar el contador de regresiones en la pantalla
+    regression_text = font.render(f"Regressions: {regression_count}", True, (255, 255, 255))
+    screen.blit(regression_text, (50, 110))
 
     pygame.display.flip()  
 
@@ -145,3 +251,32 @@ while running:
 # Quit Pygame
 pygame.quit()
 cap.close()
+
+# Crear un diccionario con los historiales de eventos
+event_logs = {
+    "fixation_log": fixation_log,
+    "regression_log": regression_log,
+    "saccade_log": saccade_log
+}
+
+# Crear la carpeta 'logs' si no existe
+logs_dir = "C:/Users/jgrios/Desktop/ProyectoEye/logs"
+if not os.path.exists(logs_dir):
+    os.makedirs(logs_dir)
+
+# Guardar los historiales de eventos en un archivo JSON en la carpeta 'logs'
+with open(os.path.join(logs_dir, "event_logs.json"), "w") as json_file:
+    json.dump(event_logs, json_file, indent=4)
+
+# Imprimir los historiales de eventos
+print("Fixation Log:")
+for log in fixation_log:
+    print(log)
+
+print("\nRegression Log:")
+for log in regression_log:
+    print(log)
+
+print("\nSaccade Log:")
+for log in saccade_log:
+    print(log)
