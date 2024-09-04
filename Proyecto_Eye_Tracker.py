@@ -89,7 +89,7 @@ def detect_fixations(smooth_cursor_x, smooth_cursor_y):
                 fixation_count += 1
                 smooth_cursor_history.append({
                     "position": current_position,
-                    "type": "fixation",
+                    "type": "fixation",                    
                     "time": current_time.strftime("%Y-%m-%d %H:%M:%S")
                 })
                 last_cursor_position_logged = True
