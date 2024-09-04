@@ -8,8 +8,19 @@ import warnings
 import json
 from datetime import datetime, timedelta
 
+# Redirigir la salida estándar y de error estándar a archivos
+sys.stdout = open(os.devnull, 'w')
+sys.stderr = open(os.devnull, 'w')
+
+# Configurar el nivel de registro de TensorFlow
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Solo errores críticos
+
 # Configuración de advertencias
 warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf.symbol_database')
+
+# Restaurar la salida estándar y de error estándar después de la configuración
+sys.stdout = sys.__stdout__
+sys.stderr = sys.__stderr__
 
 # Configuración de rutas
 dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -22,7 +33,7 @@ from eyeGestures.eyegestures import EyeGestures_v2
 # Inicialización de objetos
 gestures = EyeGestures_v2()
 gestures.enableCNCalib()
-gestures.setClassicImpact(1) # by default it is five
+gestures.setClassicImpact(10) # by default it is five
 cap = VideoCapture(0)
 
 # Inicialización de Pygame
@@ -37,6 +48,10 @@ screen_height = screen_info.current_h
 screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
 pygame.display.set_caption("Eye Tracker")
 
+# Cargar la imagen del documento
+document_image = pygame.image.load('C:/Users/jgrios/Desktop/ProyectoEye/ImagenPrueba.png')
+document_image = pygame.transform.scale(document_image, (screen_width, screen_height))
+
 # Definición de colores
 RED = (255, 0, 0)
 BLUE = (0, 0, 255)
@@ -44,23 +59,27 @@ GREEN = (0, 255, 0)
 YELLOW = (255, 255, 0)
 
 # Inicialización de variables
-history_length = 10
+history_length = 5
 cursor_x_history = collections.deque(maxlen=history_length)
 cursor_y_history = collections.deque(maxlen=history_length)
-smooth_cursor_history = []
+cursor_history = []
+
 clock = pygame.time.Clock()
+
 fixation_count = 0
 saccade_count = 0
 regression_count = 0
-saccade_threshold = 1000
+
+saccade_threshold = 500
+
 fixation_history_length = 10
 fixation_history = collections.deque(maxlen=fixation_history_length)
 fixation_log = []
-regression_log = []
-saccade_log = []
+
 running = True
 isCalibrated = False
 iterator = 0
+
 previous_time = pygame.time.get_ticks()
 previous_x, previous_y = 0, 0
 
@@ -70,24 +89,30 @@ last_cursor_time = None
 fixation_duration_threshold = timedelta(milliseconds=250)
 last_cursor_position_logged = False
 
+# Historial de valores de angular_velocity
+angular_velocity_history = []
+
+# Variable de estado para regresiones
+regression_in_progress = False
+
 # Función para calcular la velocidad angular
 def calculate_angular_velocity(x1, y1, x2, y2, delta_t):
     distance = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
     return distance / delta_t
 
-# Función para detectar fijaciones
-def detect_fixations(smooth_cursor_x, smooth_cursor_y):
-    global last_cursor_position, last_cursor_time, fixation_duration_threshold, smooth_cursor_history, fixation_count, last_cursor_position_logged
+# Función para detecta fijaciones
+def detect_fixations(cursor_x, cursor_y):
+    global last_cursor_position, last_cursor_time, fixation_duration_threshold, cursor_history, fixation_count, last_cursor_position_logged
 
     current_time = datetime.now()
-    current_position = (smooth_cursor_x, smooth_cursor_y)
+    current_position = (cursor_x, cursor_y)
 
     if last_cursor_position is not None:
         if current_position == last_cursor_position:
             duration = current_time - last_cursor_time
             if duration >= fixation_duration_threshold and not last_cursor_position_logged:
                 fixation_count += 1
-                smooth_cursor_history.append({
+                cursor_history.append({
                     "position": current_position,
                     "type": "fixation",
                     "time": current_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -112,7 +137,11 @@ except FileNotFoundError:
     event_logs = {}
 
 # Bucle principal del programa
+frame_times = []  # Lista para almacenar los tiempos de cada frame
+
 while running:
+    start_time = pygame.time.get_ticks()  # Tiempo de inicio de la iteración
+
     # Manejo de eventos
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -125,40 +154,29 @@ while running:
     ret, frame = cap.read()
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     if isCalibrated == False:
-        calibrate = (iterator <= 2400)
+        calibrate = (iterator <= 2000)
         iterator += 1
     event, calibration = gestures.step(frame, calibrate, screen_width, screen_height, context="my_context")
     cursor_x, cursor_y = event.point[0], event.point[1]
     fixation = event.fixation
 
     # Renderizado de la pantalla
-    screen.fill((0, 0, 0))
+    screen.fill((0, 0, 0))  # Limpiar la pantalla
+    screen.blit(document_image, (0, 0))  # Dibuja la imagen del documento como fondo
     frame = np.rot90(frame)
     frame = pygame.surfarray.make_surface(frame)
-    frame = pygame.transform.scale(frame, (400, 400))
+    frame = pygame.transform.scale(frame, (200, 200))
     screen.blit(frame, (0, 0))
-
-    # Suavizado de la posición del cursor
-    cursor_x_history.append(cursor_x)
-    cursor_y_history.append(cursor_y)
-    smooth_cursor_x = int(sum(cursor_x_history) / len(cursor_x_history))
-    smooth_cursor_y = int(sum(cursor_y_history) / len(cursor_y_history))
-    smooth_cursor_x = max(50, min(smooth_cursor_x, screen_width - 50))
-    smooth_cursor_y = max(50, min(smooth_cursor_y, screen_height - 50))
 
     # Dibujar círculos de calibración y fijación
     if calibrate:
-        calibration_x = max(calibration.acceptance_radius, min(calibration.point[0], screen_width - calibration.acceptance_radius))
-        calibration_y = max(calibration.acceptance_radius, min(calibration.point[1], screen_height - calibration.acceptance_radius))
-        pygame.draw.circle(screen, BLUE, (calibration_x, calibration_y), calibration.acceptance_radius)
+        pygame.draw.circle(screen, BLUE, calibration.point, calibration.acceptance_radius)      
     else:
-        calibration_x = max(calibration.acceptance_radius, min(calibration.point[0], screen_width - calibration.acceptance_radius))
-        calibration_y = max(calibration.acceptance_radius, min(calibration.point[1], screen_height - calibration.acceptance_radius))
-        pygame.draw.circle(screen, YELLOW, (calibration_x, calibration_y), calibration.acceptance_radius)
+        pygame.draw.circle(screen, YELLOW, calibration.point, calibration.acceptance_radius)
         isCalibrated = True
 
     circle_color = GREEN if fixation == 1 else RED
-    pygame.draw.circle(screen, circle_color, (smooth_cursor_x, smooth_cursor_y), 50)
+    pygame.draw.circle(screen, circle_color, event.point, 25)
     # FINALIZAR CALIBRACIÓN
 
     # Actualización de historiales y cálculos
@@ -172,47 +190,52 @@ while running:
         # Calcular la velocidad angular y detectar sacadas
         current_time = pygame.time.get_ticks()
         delta_t = (current_time - previous_time) / 1000.0
-        angular_velocity = calculate_angular_velocity(previous_x, previous_y, smooth_cursor_x, smooth_cursor_y, delta_t)
+        angular_velocity = calculate_angular_velocity(previous_x, previous_y, cursor_x, cursor_y, delta_t)
+        angular_velocity_history.append(angular_velocity)
+        print(f"Angular Velocity: {angular_velocity}")
 
         # Detectar regresiones
-        distance = np.linalg.norm([smooth_cursor_x - previous_x, smooth_cursor_y - previous_y])
-        print(distance)
-        
+        distance = np.linalg.norm([cursor_x - previous_x, cursor_y - previous_y])
+
         # Detección de fijaciones
-        detect_fixations(smooth_cursor_x, smooth_cursor_y)
+        detect_fixations(cursor_x, cursor_y)
 
         # Detección de sacadas
         if angular_velocity > saccade_threshold:   
             saccade_count += 1
-            smooth_cursor_history.append({
-                "position": (smooth_cursor_x, smooth_cursor_y),
+            cursor_history.append({
+                "previous_position": (previous_x, previous_y),
+                "actual_position": (cursor_x, cursor_y),
                 "type": "saccade",
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
 
-        # Detección de regresiones
-        if distance > 8 and distance < 15:
+        # Detección de regresiones mejorada
+        if cursor_x < previous_x and not regression_in_progress:
+            regression_in_progress = True
             regression_count += 1
-            smooth_cursor_history.append({
-                "position": (smooth_cursor_x, smooth_cursor_y),
+            cursor_history.append({
+                "position": (cursor_x, cursor_y),
                 "type": "regression",
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
+        elif cursor_x >= previous_x and regression_in_progress:
+            regression_in_progress = False
 
-        smooth_cursor_history.append({
-            "position": (smooth_cursor_x, smooth_cursor_y),
+        cursor_history.append({
+            "position": (cursor_x, cursor_y),
             "type": "cursor",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
 
         # Actualizar variables
         previous_time = current_time
-        previous_x, previous_y = smooth_cursor_x, smooth_cursor_y
+        previous_x, previous_y = cursor_x, cursor_y
 
     #------------------------------DETECCIONES-----------------------------------------
 
     # Renderizar texto en pantalla
-    text_surface = font.render(f'X: {smooth_cursor_x}, Y: {smooth_cursor_y}, Avg Fixation: {average_fixation:.2f}', True, (255, 255, 255))
+    text_surface = font.render(f'X: {cursor_x}, Y: {cursor_y}, Avg Fixation: {average_fixation:.2f}', True, (255, 255, 255))
     screen.blit(text_surface, (10, 10))
     fixation_text = font.render(f"Fixations: {fixation_count}", True, (255, 255, 255))
     screen.blit(fixation_text, (50, 50))
@@ -224,12 +247,17 @@ while running:
     pygame.display.flip()
     clock.tick(60)
 
+    # Calcular y mostrar el tiempo transcurrido en cada iteración
+    end_time = pygame.time.get_ticks()
+    iteration_time = end_time - start_time
+    frame_times.append(iteration_time)
+
 # Finalización y guardado de logs
 pygame.quit()
 cap.close()
 
-# Agregar smooth_cursor_history a los datos
-event_logs["smooth_cursor_history"] = smooth_cursor_history
+# Agregar cursor_history a los datos
+event_logs["cursor_history"] = cursor_history
 
 # Escribir los datos actualizados de vuelta al archivo JSON
 if not os.path.exists(logs_dir):
@@ -238,13 +266,24 @@ if not os.path.exists(logs_dir):
 with open(json_file_path, "w") as json_file:
     json.dump(event_logs, json_file, indent=4)
 
-# Calcular el número total de puntos del cursor
-total_points = len(smooth_cursor_history)
-
 # Calcular el porcentaje de fijaciones, sacadas y regresiones
+total_points = len(cursor_history)
+
 fixation_percentage = (fixation_count / total_points) * 100 if total_points > 0 else 0
 saccade_percentage = (saccade_count / total_points) * 100 if total_points > 0 else 0
 regression_percentage = (regression_count / total_points) * 100 if total_points > 0 else 0
+
+# Calcular y mostrar la media de angular_velocity en porcentaje
+if angular_velocity_history:
+    mean_angular_velocity = np.mean(angular_velocity_history)
+    mean_angular_velocity_percentage = mean_angular_velocity * 100  # Representar en porcentaje
+    print(f"Mean Angular Velocity: {mean_angular_velocity_percentage}%")
+
+# Calcular y mostrar los FPS reales
+if frame_times:
+    mean_frame_time = np.mean(frame_times)
+    fps = 1000 / mean_frame_time  # Convertir el tiempo medio de frame a FPS
+    print(f"Real FPS: {fps:.2f}")
 
 # Imprimir los resultados en la terminal
 print(f"Total Cursor Points: {total_points}")
