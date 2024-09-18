@@ -2,6 +2,7 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 from screeninfo import get_monitors
+import sys
 
 # Obtener las dimensiones de la pantalla
 monitor = get_monitors()[0]
@@ -11,8 +12,12 @@ print(f"Screen Width: {screen_width}, Screen Height: {screen_height}")
 
 # Leer el archivo JSON
 json_file_path = "C:/Users/jgrios/Desktop/ProyectoEye/logs/event_logs.json"
-with open(json_file_path, "r") as json_file:
-    event_logs = json.load(json_file)
+try:
+    with open(json_file_path, "r") as json_file:
+        event_logs = json.load(json_file)
+except FileNotFoundError:
+    print(f"Error: The file {json_file_path} does not exist.")
+    sys.exit(1)
 
 # Extraer cursor_history
 cursor_history = event_logs.get("cursor_history", [])
